@@ -185,7 +185,8 @@ class Node:
                 log.debug("Failed connect attempt %s, retrying in %s", attempt, delay)
                 await asyncio.sleep(delay)
                 attempt += 1
-            except websockets.InvalidStatusCode:
+            except Exception as e:
+                log.debug(e)
                 return None
 
     async def listener(self):
