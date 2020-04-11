@@ -146,9 +146,7 @@ class Player(RESTClient):
         guild_id = self.channel.guild.id
         voice_ws = self.node.get_voice_ws(guild_id)
 
-        if not voice_ws.closed:
-            await voice_ws.voice_state(guild_id, None)
-
+        await voice_ws.voice_state(guild_id, None)
         await self.node.destroy_guild(guild_id)
         await self.close()
 
