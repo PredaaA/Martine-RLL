@@ -30,7 +30,7 @@ class Stats:
         self.uptime = uptime
 
 
-# Node stats related class bellow and how it is called is originally from:
+# Node stats related class below and how it is called is originally from:
 # https://github.com/PythonistaGuild/Wavelink/blob/master/wavelink/stats.py#L41
 # https://github.com/PythonistaGuild/Wavelink/blob/master/wavelink/websocket.py#L132
 class NodeStats:
@@ -97,13 +97,13 @@ class Node:
         self.port = port
         self.rest = rest
         self.password = password
-        self.session = aiohttp.ClientSession()
         self.headers = self._get_connect_headers(self.password, user_id, num_shards)
 
         self.ready = asyncio.Event()
 
         self._ws = None
         self._listener_task = None
+        self.session = aiohttp.ClientSession()
 
         self._queue = []
 
@@ -178,31 +178,45 @@ class Node:
 
         while self._is_shutdown is False and (self._ws is None or self._ws.closed):
             try:
-                ws = self._ws = await self.session.ws_connect(url=uri, headers=self.headers)
-                return ws
+                ws = await self.session.ws_connect(url=uri, headers=self.headers)
             except OSError:
                 delay = backoff.delay()
                 log.debug("Failed connect attempt %s, retrying in %s", attempt, delay)
                 await asyncio.sleep(delay)
                 attempt += 1
-            except Exception as e:
-                log.debug(e)
+            except aiohttp.WSServerHandshakeError:
                 return None
+            else:
+                self._ws = ws
+                return self._ws
 
     async def listener(self):
         """
         Listener task for receiving ops from Lavalink.
         """
-        while not self._ws.closed and self._is_shutdown is False:
-            try:
-                data = await self._ws.receive_json()
-            except Exception as e:
-                log.debug("listener error %s", e)
+        while self._is_shutdown is False and not self._ws.closed:
+            msg = await self._ws.receive()
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                if msg.type is aiohttp.WSMsgType.ERROR:
+                    log.debug("Ignoring exception in listener task", exc_info=msg.data)
+                elif msg.type in (
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.CLOSING,
+                    aiohttp.WSMsgType.CLOSE,
+                ):
+                    log.debug("Listener closing: %s", msg.extra)
+                else:
+                    log.debug(
+                        "WebSocket connection received unexpected message: %s:%s",
+                        msg.type,
+                        msg.data,
+                    )
+
                 break
 
-            raw_op = data.get("op")
+            data = json.loads(msg.data)
             try:
-                op = LavalinkIncomingOp(raw_op)
+                op = LavalinkIncomingOp(data.get("op"))
             except ValueError:
                 socket_log.debug("Received unknown op: %s", data)
             else:
@@ -210,7 +224,7 @@ class Node:
                 self.loop.create_task(self._handle_op(op, data))
 
         self.ready.clear()
-        log.debug("Listener exited: ws %s SHUTDOWN %s.", self._ws.closed, self._is_shutdown)
+        log.debug("Listener exited: ws %s SHUTDOWN %s.", not self._ws.closed, self._is_shutdown)
         self.loop.create_task(self._reconnect())
 
     async def _handle_op(self, op: LavalinkIncomingOp, data):
@@ -299,6 +313,8 @@ class Node:
 
         if self._listener_task is not None and not self.loop.is_closed():
             self._listener_task.cancel()
+
+        await self.session.close()
 
         self._state_handlers = []
 
